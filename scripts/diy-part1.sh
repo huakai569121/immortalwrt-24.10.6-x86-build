@@ -120,6 +120,55 @@ else
 fi
 
 # ------------------------------------------------------------------
+# 5. 首次启动 UCI 预置（对齐现网调参）
+#    重要：故意不设 noresolv / server=127.0.0.1#7874。
+#    新固件首次开机时 OpenClash 还没有订阅与规则，预置接管 DNS 会直接
+#    把全网解析打死。DNS 主链路留到刷完后按现网备份恢复。
+# ------------------------------------------------------------------
+echo "== [5/5] 生成首次启动 uci-defaults =="
+mkdir -p files/etc/uci-defaults
+cat > files/etc/uci-defaults/99-custom-dns <<'UCI'
+#!/bin/sh
+# 仅在首次启动执行一次；成功后 OpenWrt 会自动删除本文件
+
+# --- dnsmasq：Fake-IP 198.18.x.x 需要关 rebind；LAN 无 IPv6 需过滤 AAAA ---
+uci -q set dhcp.@dnsmasq[0].rebind_protection='0'
+uci -q set dhcp.@dnsmasq[0].filter_aaaa='1'
+uci -q commit dhcp
+
+# --- SmartDNS：对齐现网调优，只监听 6053，不占 53、不接管主链路 ---
+[ -n "$(uci -q get smartdns.@smartdns[0])" ] || uci add smartdns smartdns >/dev/null
+uci -q set smartdns.@smartdns[0].enabled='1'
+uci -q set smartdns.@smartdns[0].port='6053'
+uci -q set smartdns.@smartdns[0].tcp_server='1'
+uci -q set smartdns.@smartdns[0].speed_check_mode='tcp:443'
+uci -q set smartdns.@smartdns[0].cache_size='65535'
+uci -q set smartdns.@smartdns[0].prefetch_domain='1'
+uci -q set smartdns.@smartdns[0].dualstack_ip_selection='0'
+# 清掉默认上游后按现网重建（限速 20 次，避免极端情况下死循环）
+i=0
+while [ "$i" -lt 20 ] && uci -q delete smartdns.@server[0]; do i=$((i+1)); done
+for s in "AliDNS 223.5.5.5 udp" "DNSPod 119.29.29.29 udp" "AliDoH doh.pub/dns-query https" "AliDoH2 dns.alidns.com/dns-query https"; do
+  set -- $s
+  uci add smartdns server >/dev/null
+  uci -q set smartdns.@server[-1].name="$1"
+  uci -q set smartdns.@server[-1].ip="$2"
+  uci -q set smartdns.@server[-1].type="$3"
+done
+uci -q commit smartdns
+
+# --- firewall：开启 Fullcone NAT（kmod-nft-fullcone 已内置，底包含 fw4 补丁）---
+# 不预置 flow_offloading：留给用户按实测决定是否开启
+uci -q set firewall.@defaults[0].fullcone='1'
+uci -q commit firewall
+
+exit 0
+UCI
+chmod 755 files/etc/uci-defaults/99-custom-dns
+echo "  已生成: files/etc/uci-defaults/99-custom-dns"
+echo "  说明: 未预置 noresolv / server=7874，避免首次开机 DNS 瘫痪"
+
+# ------------------------------------------------------------------
 # 把本次输入写给 part2，用于生成预检报告
 # ------------------------------------------------------------------
 cat > .diy_inputs <<EOF
