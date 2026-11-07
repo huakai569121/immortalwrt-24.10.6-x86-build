@@ -142,16 +142,24 @@ if [ -f package/system/uci/Makefile ] && grep -q 'define Package/libuci-lua' pac
   ok "libuci-lua 由 package/system/uci 提供"
 else bad "libuci-lua 包定义未找到，iStore 商店依赖无法满足"; fi
 
-log "  [C5] Flow Offload 与 OpenClash TProxy（运行时冲突，非编译期）"
-warn "Turbo ACC 的流量卸载与 OpenClash 的 TProxy 模式可能互相干扰"
-warn "固件不预置开启 flow offload，请二者择一使用（见 README）"
+log "  [C5] Flow Offload 与 OpenClash TProxy（运行时，非编译期）"
+warn "现网实测 flow_offloading=1 与 OpenClash fake-ip / TProxy 共存正常，无需强制二选一"
+warn "固件默认不开启 flow offload；仅在出现分流或 NAT 类型异常时再考虑关闭"
+warn "已内置 kmod-nft-fullcone 并在首次启动预置 fullcone=1（不预置 flow offload）"
+log "  [C6] 首次启动 UCI 预置（对齐现网调参）"
+if [ -x files/etc/uci-defaults/99-custom-dns ]; then
+  ok "99-custom-dns 已生成且可执行"
+  warn "未预置 noresolv / server=7874 —— 首次开机 OpenClash 未配置时避免全网 DNS 瘫痪"
+else
+  bad "99-custom-dns 缺失或不可执行，首次启动预置不会生效"
+fi
 log ""
 
 # ------------------------------------------------------------------
 # 4. 点名插件解析结果（defconfig 后仍为 =y 才说明 feed + 依赖都 OK）
 # ------------------------------------------------------------------
 log "五、点名插件在 defconfig 后的解析结果"
-PACKAGES="luci luci-app-openclash smartdns luci-app-smartdns luci-app-store dnsmasq-full"
+PACKAGES="luci luci-app-openclash smartdns luci-app-smartdns luci-app-store dnsmasq-full kmod-nft-fullcone luci-i18n-smartdns-zh-cn luci-i18n-quickstart-zh-cn"
 [ "$ENABLE_QUICKSTART" = "true" ] && PACKAGES="$PACKAGES luci-app-quickstart"
 [ "$TURBOACC_MODE" != "none" ]    && PACKAGES="$PACKAGES luci-app-turboacc"
 for p in $PACKAGES; do
