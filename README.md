@@ -2,9 +2,9 @@
 
 面向 **i3-6100T 物理机** 与 **PVE 虚拟机**。本仓库只存放 GitHub Actions 编译配置，不含 ImmortalWrt 源码。
 
-> 当前状态：**工程已就绪，未推送、未触发任何编译**。
+> 当前状态：仓库已创建、首次预检 **PASS**；按现网核查结果补齐三项后正在重跑预检。
+> **仍未触发正式编译**（需用户确认后才跑 `make`）。
 > 已确认（2026-11-07）：**本次不内置 Turbo ACC**（`turboacc_mode=none`），规避内核补丁冲突。
-> 还需你提供 GitHub PAT 后才会创建仓库 / 推送 / 先跑预检。
 
 ## 一、方案概览
 
@@ -18,6 +18,7 @@
 | 镜像 | 一次编译产出 4 份 combined（squashfs / ext4 × BIOS / EFI，均为 `.img.gz`）+ EFI QCOW2 |
 | 内置插件 | quickstart 向导、iStore 商店、SmartDNS + LuCI、OpenClash；**Turbo ACC 本次不内置**（按确认跳过） |
 | 附加 | 中文语言包、luci-compat、dnsmasq-full、预置 Clash Meta 内核 |
+| 对齐现网补充 | `kmod-nft-fullcone`、SmartDNS / quickstart 中文包、首次启动 UCI 预置（见下节） |
 
 插件来源（已逐个核验）：
 
@@ -29,7 +30,22 @@
 | `quickstart` 核心 | `linkease/nas-packages;master` → `network/services/quickstart` |
 | `luci/luci-app-quickstart` | `linkease/nas-packages-luci;main`；依赖 `+quickstart +luci-app-store` |
 | `luci-app-turboacc` | 第三方注入（官方 24.10 feed 无此包），见冲突 C2~C5 |
+| `kmod-nft-fullcone` | **v24.10.6 主仓库自带** `package/network/utils/fullconenat-nft`，无需第三方 feed |
+| `luci-i18n-smartdns-zh-cn` | 官方 luci feed 的 `applications/luci-app-smartdns/po/zh_Hans` |
+| `luci-i18n-quickstart-zh-cn` | `nas-packages-luci` 的 `luci/luci-app-quickstart/po/zh-cn` |
 | Clash Meta 内核 | `MetaCubeX/mihomo` 最新 release 的 `mihomo-linux-amd64-v*.gz` |
+
+### 对齐现网的三项补充（2026-11-07 追加）
+
+现网 192.168.2.1 本身就是 ImmortalWrt 24.10.6 / x86_64 / i3-6100T，已装 `kmod-nft-fullcone 6.6.133.2023.05.17~07d93b62-r2`、两个中文语言包，并把 SmartDNS 调到 `tcp:443` 测速。为避免刷完新固件"功能少了、参数变了"，补了以下三项：
+
+| 项 | 实现 | 说明 |
+|---|---|---|
+| 1. Fullcone NAT | `CONFIG_PACKAGE_kmod-nft-fullcone=y` in `config/seed.config` | 主仓库 `fullconenat-nft` 的 `PKG_SOURCE_VERSION=07d93b62` 与现网完全一致；底包已带 firewall4 / nftables / libnftnl 的 fullcone 补丁，所以**不需要**第三方 feed。首次启动预置 `firewall.@defaults[0].fullcone='1'` |
+| 2. 中文包 | `luci-i18n-smartdns-zh-cn`、`luci-i18n-quickstart-zh-cn` | 两个包的 po 目录均已核实存在 |
+| 3. 首次启动调参 | `files/etc/uci-defaults/99-custom-dns`（由 `diy-part1.sh` 生成） | `rebind_protection=0`、`filter_aaaa=1`；SmartDNS `:6053` + `tcp_server=1` + `tcp:443` 测速 + cache 65535 + prefetch + 现网四个上游；`fullcone=1` |
+
+**安全边界**：第 3 项**故意不预置** `noresolv` 和 `server=127.0.0.1#7874`。新固件首次开机时 OpenClash 还没有订阅和规则，若把 dnsmasq 直接指向 Clash DNS 会让全网解析瘫痪。DNS 主链路请刷完后按现网备份恢复，或按推荐方案配置（AGH 作 Clash 唯一 nameserver、AGH 上游指向 `192.168.2.1:6053`）。同理**不预置** `flow_offloading`。
 
 ## 二、编译前冲突清单
 
@@ -43,7 +59,7 @@
 | **C3 ⚠ 需决策** | 新版 `mufeng05/turboacc` 的 rebased 补丁面向 firewall4 2026-10 / nftables 1.1.7 / libnftnl 1.3.2；而 **24.10.6 实际是 firewall4 `PKG_SOURCE_DATE:=2024-12-18` / nftables 1.1.1 / libnftnl 1.2.8**。脚本的 `find_best_pkg_patch_dir` 只选「≤ 实际版本」的补丁目录，全部不匹配 → 退回 lede 旧补丁，大概率打补丁失败；且该脚本不支持 `--no-sfe`，会强行注入 953 SFE / Broadcom fullcone 内核补丁 | 两侧 Makefile 与 turboacc 仓库 tree 对比 | **默认不用这个分支**。workflow 保留 `mufeng05` 仅作对照实验 |
 | **C4 ⚠ 需决策** | Shortcut-FE / Fast Classifier 依赖 iptables 时代的 conntrack chain events，**与 firewall4 / nftables 不兼容** | turboacc 项目 README 明确说明 | 采用 `chenmozhijin/turboacc` 的 `luci` 分支 + `--no-sfe`（面向 24.10 / 内核 6.6 / fw4），只保留 Flow Offloading 与兼容模式 Fullcone NAT |
 | **C5 ⚠ 需决策** | `chenmozhijin` 方案会 `rm -rf` 并整体替换官方 `firewall4` / `nftables` / `libnftnl` 三个核心包；脚本按 `PKG_SOURCE_VERSION` 匹配自带存档，而 24.10.6 的 firewall4 Makefile **没有**该字段，会 fallback 到自带 latest 版本 → 存在与 ImmortalWrt 定制补丁不匹配的可能 | 脚本第 106/110/124 行 + 24.10.6 Makefile | 预检会检查注入结果；若编译失败，把 `turboacc_mode` 设为 `none` 重跑即可保住其余插件。**也可以本次先不内置 Turbo ACC** |
-| **C6** | Turbo ACC 的软件流量卸载（flow offload）与 OpenClash 的 TProxy 透明代理在运行时会互相干扰 | 既有排障经验 + 社区共识 | 固件**不预置开启** flow offload；使用时二者择一（见第四节） |
+| **C6** | flow offload 与 OpenClash TProxy 理论上会互相干扰 | 通用经验；但**现网实测 `flow_offloading=1` + fake-ip/TProxy 共存正常**（baidu 真实 IP、google Fake-IP） | 不必强制二选一；固件默认不开启 flow offload，仅在出现分流或 NAT 类型异常时再关。已内置 fullcone 并预置 `fullcone=1` |
 | **C7** | quickstart 在 24.10 上有「编译成功但开机异常」的社区案例；其依赖链会拉起 `parted / mdadm / smartmontools / smartd / e2fsprogs / shadow-utils` 等 15+ 包，明显增加编译体积与时间 | quickstart Makefile `DEPENDS`；恩山 2025-08 案例 | 提供 `enable_quickstart` 开关，出问题可关闭重跑（iStore 商店不受影响） |
 | **C8** | SmartDNS 与 dnsmasq-full 都默认监听 53 端口 | 运行时配置冲突，非编译期 | 首次启动把 SmartDNS 设为上游（如 6053/5335），dnsmasq 转发过去；或反过来让 SmartDNS 作为主 DNS。见第四节 |
 | **C9** | 「overlay 5G」≠「rootfs 分区 5G」：squashfs 固件本体也占同一分区 | `scripts/gen_image_generic.sh` 的 PADDING 逻辑 | 分区设为 6144 MiB，扣除本体后净可用仍 > 5 GiB |
@@ -93,14 +109,14 @@ qm importdisk <VMID> /tmp/immortalwrt.img local-lvm
 
 1. LAN 已是 `192.168.2.1`，若与现有网关并存请先改 IP 或断开现有网关，避免 DHCP 冲突。
 2. 立刻设置 root 密码（固件未预置密码）。
-3. SmartDNS 与 dnsmasq-full 二选一占用 53：常用做法是 SmartDNS 监听 6053 作上游，dnsmasq 转发到 `127.0.0.1#6053`；也可把 SmartDNS 设为主 DNS 并关掉 dnsmasq 的 DNS 功能。
-4. OpenClash 已预置 Meta 内核，仍需下载 GeoIP/GeoSite 数据库与订阅配置。
-5. **不要同时开 Turbo ACC 的 Flow Offload 与 OpenClash TProxy**；要开流量卸载就把 OpenClash 改用 Redirect / 兼容模式并实测。
+3. UCI 预置已把 SmartDNS 放在 `:6053`（`tcp:443` 测速）并设好 `rebind_protection=0` / `filter_aaaa=1` / `fullcone=1`，但**没有接管 DNS 主链路**。按现网备份恢复 `/etc/config/{dhcp,openclash,smartdns,firewall}`，或采用推荐方案：Clash `nameserver` 只留 `192.168.2.2`(AGH)，AGH 上游设 `192.168.2.1:6053` 主 + 一个明文备用。SmartDNS 上游不得指回 `.1:53` / `.2` / `7874`（防回环）。
+4. OpenClash 已预置 Meta 内核，仍需下载 GeoIP/GeoSite 数据库与订阅配置；DNS 劫持（`redirect_dns=1`）建议保留，防止客户端绕过整条链路。
+5. flow offload 现网与 OpenClash 共存正常，不必强制二选一；固件默认不开启，若出现分流或 NAT 类型异常再考虑关闭。
 6. 15G 磁盘里镜像只占约 6G，剩余空间可在系统内用 `cfdisk` 新建分区挂到 `/data`，或后期扩容 overlay。
 
 ## 五、已知风险与降级顺序
 
-1. 本次已跳过 Turbo ACC（C3~C5）。以后要加入时先用 `preflight_only` 预检，失败即 `turboacc_mode=none` 重跑。
+1. 本次已跳过 Turbo ACC（C3~C5）。以后要加入时先用 `preflight_only` 预检，失败即 `turboacc_mode=none` 重跑。**注意**：底包已自带 fullcone 补丁，第三方 turboacc 脚本会覆盖 firewall4 / nftables / libnftnl，容易冲突。
 2. quickstart 导致开机异常（C7）→ `enable_quickstart=false` 重跑。
 3. 编译超过 6 小时 → 改用 PVE 上的 self-hosted runner（`runs-on: self-hosted`），本机编译不受 6 小时与磁盘配额限制。
 4. 需要额外插件 → 编辑 `config/seed.config`，加 `CONFIG_PACKAGE_xxx=y`，重新跑预检确认依赖可解析。
